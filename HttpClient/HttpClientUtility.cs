@@ -23,12 +23,25 @@ namespace Milkitic.HttpClient
     {
         public static readonly string CacheImagePath =
             Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "imageCache");
-        public static int Timeout { get; set; } = 8000;
-        public static int RetryCount { get; set; } = 3;
-        private static System.Net.Http.HttpClient _httpClient;
 
-        public HttpClientUtility()
+        public TimeSpan Timeout { get; set; }
+
+        public int RetryCount { get; set; }
+
+        private readonly System.Net.Http.HttpClient _httpClient;
+
+        public HttpClientUtility() : this(TimeSpan.FromSeconds(8), 3)
         {
+        }
+
+        public HttpClientUtility(TimeSpan timeout) : this(timeout, 3)
+        {
+        }
+
+        public HttpClientUtility(TimeSpan timeout, int retryCount)
+        {
+            Timeout = timeout;
+            RetryCount = retryCount;
             var handler = new HttpClientHandler
             {
                 AutomaticDecompression = DecompressionMethods.GZip
@@ -36,7 +49,7 @@ namespace Milkitic.HttpClient
             ServicePointManager.ServerCertificateValidationCallback = CheckValidationResult;
             _httpClient = new System.Net.Http.HttpClient(handler)
             {
-                Timeout = new TimeSpan(0, 0, 0, 0, Timeout),
+                Timeout = Timeout
             };
         }
 
@@ -72,7 +85,7 @@ namespace Milkitic.HttpClient
         /// <param name="args">Parameter dictionary.</param>
         /// <param name="argsHeader">Header dictionary.</param>
         /// <returns></returns>
-        public static string HttpPost(string url,
+        public string HttpPost(string url,
             IDictionary<string, string> args,
             IDictionary<string, string> argsHeader = null)
         {
@@ -105,7 +118,7 @@ namespace Milkitic.HttpClient
         /// <param name="args">Parameter dictionary.</param>
         /// <param name="argsHeader">Header dictionary.</param>
         /// <returns></returns>
-        public static string HttpGet(string url, IDictionary<string, string> args = null, IDictionary<string, string> argsHeader = null)
+        public string HttpGet(string url, IDictionary<string, string> args = null, IDictionary<string, string> argsHeader = null)
         {
             for (int i = 0; i < RetryCount; i++)
             {
@@ -140,7 +153,7 @@ namespace Milkitic.HttpClient
             return null;
         }
 
-        public static Image GetImageFromUrl(string url)
+        public Image GetImageFromUrl(string url)
         {
             Uri uri = new Uri(Uri.EscapeUriString(url));
             byte[] urlContents = _httpClient.GetByteArrayAsync(uri).Result;
@@ -150,7 +163,7 @@ namespace Milkitic.HttpClient
             return Image.FromStream(fs);
         }
 
-        public static string SaveImageFromUrl(string url, ImageFormat format, string filename = null, string savePath = null)
+        public string SaveImageFromUrl(string url, ImageFormat format, string filename = null, string savePath = null)
         {
             Contract.Requires<NotSupportedException>(Equals(format, ImageFormat.Jpeg) ||
                                                      Equals(format, ImageFormat.Png) ||
@@ -172,7 +185,7 @@ namespace Milkitic.HttpClient
             return new FileInfo(fullname).FullName;
         }
 
-        private static string HttpPost(string url, HttpContent content)
+        private string HttpPost(string url, HttpContent content)
         {
             string responseStr = null;
             for (int i = 0; i < RetryCount; i++)
