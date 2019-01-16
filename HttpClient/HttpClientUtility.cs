@@ -1,0 +1,208 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Diagnostics.Contracts;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Threading;
+
+namespace Milkitic.HttpClient
+{
+    /// <summary>
+    /// Helper class of HttpClient.
+    /// To increase the efficiency, please consider to initialize this class infrequently.
+    /// </summary>
+    public class HttpClientUtility
+    {
+        public static readonly string CacheImagePath =
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "imageCache");
+        public static int Timeout { get; set; } = 8000;
+        public static int RetryCount { get; set; } = 3;
+        private static System.Net.Http.HttpClient _httpClient;
+
+        public HttpClientUtility()
+        {
+            var handler = new HttpClientHandler
+            {
+                AutomaticDecompression = DecompressionMethods.GZip
+            };
+            ServicePointManager.ServerCertificateValidationCallback = CheckValidationResult;
+            _httpClient = new System.Net.Http.HttpClient(handler)
+            {
+                Timeout = new TimeSpan(0, 0, 0, 0, Timeout),
+            };
+        }
+
+        /// <summary>
+        /// Post with nothing.
+        /// </summary>
+        /// <param name="url">Http uri.</param>
+        /// <returns></returns>
+        public string HttpPost(string url)
+        {
+            HttpContent content = new StringContent("");
+            content.Headers.ContentType = new MediaTypeHeaderValue(HttpContentType.Form.GetContentType());
+            return HttpPost(url, content);
+        }
+
+        /// <summary>
+        /// Post with Json.
+        /// </summary>
+        /// <param name="url">Http uri.</param>
+        /// <param name="postJson">json string.</param>
+        /// <returns></returns>
+        public string HttpPost(string url, string postJson)
+        {
+            HttpContent content = new StringContent(postJson);
+            content.Headers.ContentType = new MediaTypeHeaderValue(HttpContentType.Json.GetContentType());
+            return HttpPost(url, content);
+        }
+
+        /// <summary>
+        /// Post with Json.
+        /// </summary>
+        /// <param name="url">Http uri.</param>
+        /// <param name="args">Parameter dictionary.</param>
+        /// <param name="argsHeader">Header dictionary.</param>
+        /// <returns></returns>
+        public static string HttpPost(string url,
+            IDictionary<string, string> args,
+            IDictionary<string, string> argsHeader = null)
+        {
+            HttpContent content;
+            if (args != null)
+            {
+                var jsonStr = Newtonsoft.Json.JsonConvert.SerializeObject(args);
+                content = new StringContent(jsonStr);
+                content.Headers.ContentType = new MediaTypeHeaderValue(HttpContentType.Json.GetContentType());
+            }
+            else
+            {
+                content = new StringContent("");
+                content.Headers.ContentType = new MediaTypeHeaderValue(HttpContentType.Form.GetContentType());
+            }
+
+            if (argsHeader != null)
+            {
+                foreach (var item in argsHeader)
+                    content.Headers.Add(item.Key, item.Value);
+            }
+
+            return HttpPost(url, content);
+        }
+
+        /// <summary>
+        /// Get with value-pairs.
+        /// </summary>
+        /// <param name="url">Http uri.</param>
+        /// <param name="args">Parameter dictionary.</param>
+        /// <param name="argsHeader">Header dictionary.</param>
+        /// <returns></returns>
+        public static string HttpGet(string url, IDictionary<string, string> args = null, IDictionary<string, string> argsHeader = null)
+        {
+            for (int i = 0; i < RetryCount; i++)
+            {
+                try
+                {
+                    if (args != null)
+                    {
+                        url = url + args.ToUrlParamString();
+                    }
+
+                    var message = new HttpRequestMessage(HttpMethod.Get, url);
+                    if (argsHeader != null)
+                    {
+                        foreach (var item in argsHeader)
+                        {
+                            message.Headers.Add(item.Key, item.Value);
+                        }
+                    }
+                    CancellationTokenSource cts = new CancellationTokenSource(Timeout);
+                    HttpResponseMessage response = _httpClient.SendAsync(message, cts.Token).Result;
+
+                    return response.Content.ReadAsStringAsync().Result;
+                }
+                catch (Exception e)
+                {
+                    Debug.WriteLine($"Tried {i + 1} time{(i + 1 > 1 ? "s" : "")} for timed out. (>{Timeout}ms): " + url);
+                    if (i == RetryCount - 1)
+                        throw;
+                }
+            }
+
+            return null;
+        }
+
+        public static Image GetImageFromUrl(string url)
+        {
+            Uri uri = new Uri(Uri.EscapeUriString(url));
+            byte[] urlContents = _httpClient.GetByteArrayAsync(uri).Result;
+            string fullName = Path.Combine(CacheImagePath, Guid.NewGuid().ToString());
+            FileStream fs = new FileStream(fullName, FileMode.OpenOrCreate);
+            fs.Write(urlContents, 0, urlContents.Length);
+            return Image.FromStream(fs);
+        }
+
+        public static string SaveImageFromUrl(string url, ImageFormat format, string filename = null, string savePath = null)
+        {
+            Contract.Requires<NotSupportedException>(Equals(format, ImageFormat.Jpeg) ||
+                                                     Equals(format, ImageFormat.Png) ||
+                                                     Equals(format, ImageFormat.Gif));
+            var img = GetImageFromUrl(url);
+            string imgPath = CacheImagePath;
+            filename = filename ?? Guid.NewGuid().ToString();
+            savePath = savePath ?? imgPath;
+
+            string ext = "";
+            if (Equals(format, ImageFormat.Jpeg))
+                ext = ".jpg";
+            else if (Equals(format, ImageFormat.Png))
+                ext = ".png";
+            else if (Equals(format, ImageFormat.Gif))
+                ext = ".gif";
+            string fullname = Path.Combine(savePath, filename + ext);
+            img.Save(fullname, format);
+            return new FileInfo(fullname).FullName;
+        }
+
+        private static string HttpPost(string url, HttpContent content)
+        {
+            string responseStr = null;
+            for (int i = 0; i < RetryCount; i++)
+            {
+                try
+                {
+                    var response = _httpClient.PostAsync(url, content).Result;
+                    // ensure if the request is success.
+                    response.EnsureSuccessStatusCode();
+                    // read the Json asynchronously.
+
+                    // notice currently was auto decompressed with GZip,
+                    // because AutomaticDecompression was set to DecompressionMethods.GZip
+                    responseStr = response.Content.ReadAsStringAsync().Result;
+                    return responseStr;
+                }
+                catch (Exception e)
+                {
+                    Debug.WriteLine($"Tried {i + 1} time{(i + 1 > 1 ? "s" : "")} for timed out. (>{Timeout}ms): " + url);
+                    if (i == RetryCount - 1)
+                        throw;
+                }
+            }
+
+            return responseStr;
+        }
+
+        private static bool CheckValidationResult(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors errors)
+        {
+            return true; // always accept.  
+        }
+    }
+}
